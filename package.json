@@ -1,0 +1,16 @@
+{
+  "name": "galeria-vetor-digital",
+  "private": true,
+  "type": "module",
+  "description": "Plataforma de venda de fotografias esportivas da Vetor Digital",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/gen-config.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": ">=8.1.0"
+  }
+}
