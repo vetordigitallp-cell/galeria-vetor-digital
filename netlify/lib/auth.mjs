@@ -50,9 +50,13 @@ export async function login(email, password, ip) {
   const st = (await store.getJSON(lk)) || { n: 0, since: Date.now() };
   if (Date.now() - st.since > LOCK_MS) { st.n = 0; st.since = Date.now(); }
   if (st.n >= LOCK_MAX) throw new HttpError(429, 'Muitas tentativas de login. Aguarde 15 minutos e tente de novo.');
-  const E = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
-  const P = process.env.ADMIN_PASSWORD || '';
-  if (!E || P.length < 10) throw new HttpError(500, 'Painel sem acesso configurado: defina ADMIN_EMAIL e ADMIN_PASSWORD (mínimo 10 caracteres) no Netlify.');
+  const readEnv = (k) => (globalThis.Netlify?.env?.get?.(k) ?? process.env[k] ?? '');
+  const E = String(readEnv('ADMIN_EMAIL')).trim().toLowerCase();
+  const P = String(readEnv('ADMIN_PASSWORD'));
+  // Diz qual configuração falta, sem nunca revelar o valor.
+  if (!E) throw new HttpError(500, 'Painel sem acesso configurado: ADMIN_EMAIL não chegou às funções do Netlify.');
+  if (!P) throw new HttpError(500, 'Painel sem acesso configurado: ADMIN_PASSWORD não chegou às funções do Netlify.');
+  if (P.length < 10) throw new HttpError(500, 'Painel sem acesso configurado: ADMIN_PASSWORD tem menos de 10 caracteres.');
   const ok = same(String(email || '').trim().toLowerCase(), E) & same(String(password || ''), P);
   if (!ok) {
     st.n += 1; await store.setJSON(lk, st);
