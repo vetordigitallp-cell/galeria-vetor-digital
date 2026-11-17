@@ -62,7 +62,7 @@ export async function viewEventForm(id) {
   }
   const f = {
     name: el('input', { class: 'input', required: true, value: ev.name }),
-    slug: el('input', { class: 'input', required: true, value: ev.slug, pattern: '[a-z0-9-]+' }),
+    slug: el('input', { class: 'input', required: true, value: ev.slug, pattern: '[a-z0-9\\-]+' }),
     category: el('input', { class: 'input', value: ev.category, list: 'cats' }),
     event_date: el('input', { class: 'input', type: 'date', value: ev.event_date || '' }),
     location: el('input', { class: 'input', value: ev.location || '', placeholder: 'Cidade - UF' }),

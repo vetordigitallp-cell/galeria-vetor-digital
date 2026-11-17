@@ -146,3 +146,33 @@ test('login: bloqueia depois de 8 senhas erradas do mesmo IP', async () => {
   assert.equal((await tentar('senha-forte-de-teste', '9.9.9.9')).status, 429, 'bloqueado mesmo com a senha certa');
   assert.equal((await tentar('senha-forte-de-teste', '8.8.8.8')).status, 200, 'outro IP continua entrando');
 });
+
+// ---------------------------------------------------------------- equipe (sócio)
+test('equipe: dono adiciona sócio, sócio entra, não mexe na equipe e perde acesso ao ser removido', async () => {
+  const { login, adminFromRequest } = await import('../netlify/lib/auth.mjs');
+  const { rpc } = await import('../netlify/lib/db.mjs');
+  const req = (t) => new Request('http://x/api/db', { headers: { authorization: 'Bearer ' + t } });
+  const owner = await login(process.env.ADMIN_EMAIL, process.env.ADMIN_PASSWORD, '10.0.0.1');
+  const ownerActor = await adminFromRequest(req(owner.access_token));
+  assert.equal(ownerActor.role, 'owner');
+  await assert.rejects(() => rpc('grant_admin', { p_email: 'socio@x.com', p_role: 'admin', p_password: 'curta' }, 'owner', ownerActor), /10 caracteres/);
+  const m = await rpc('grant_admin', { p_email: 'Socio@X.com', p_role: 'admin', p_password: 'senha-do-socio-1' }, 'owner', ownerActor);
+  assert.equal(m.email, 'socio@x.com');
+  await assert.rejects(() => rpc('grant_admin', { p_email: 'socio@x.com', p_role: 'admin', p_password: 'senha-do-socio-1' }, 'owner', ownerActor), /já está/);
+  const s = await login('socio@x.com', 'senha-do-socio-1', '10.0.0.2');
+  const sActor = await adminFromRequest(req(s.access_token));
+  assert.equal(sActor.role, 'admin');
+  await assert.rejects(() => rpc('grant_admin', { p_email: 'z@x.com', p_password: '1234567890' }, 'admin', sActor), /Dono/);
+  await assert.rejects(() => login('socio@x.com', 'errada-errada', '10.0.0.3'), /incorretos/);
+  // troca de senha pela própria pessoa encerra a sessão antiga
+  await rpc('change_password', { p_current: 'senha-do-socio-1', p_new: 'senha-nova-do-socio' }, 'admin', sActor);
+  assert.equal(await adminFromRequest(req(s.access_token)), null);
+  const s2 = await login('socio@x.com', 'senha-nova-do-socio', '10.0.0.2');
+  assert.ok(await adminFromRequest(req(s2.access_token)));
+  // removido: perde o acesso na hora
+  await rpc('revoke_admin', { p_user: m.user_id }, 'owner', ownerActor);
+  assert.equal(await adminFromRequest(req(s2.access_token)), null);
+  const team = await rpc('admin_team', {}, 'owner', ownerActor);
+  assert.equal(team.length, 1);
+  assert.ok(!JSON.stringify(team).includes('hash'));
+});

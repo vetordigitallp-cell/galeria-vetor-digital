@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import { kv, mapLimit } from './blobstore.mjs';
 import { HttpError } from './http.mjs';
+import { teamList, teamAdd, teamRemove, teamResetPassword, changeOwnPassword } from './auth.mjs';
 
 export const SETTINGS_DEFAULTS = {
   id: 1, company_name: 'Vetor Digital', tagline: 'Fotografia esportiva', about: null, whatsapp: '5538997251419',
@@ -204,13 +205,14 @@ function sortRows(rows, order) {
 
 // ------------------------------------------------------------------ consulta genérica
 // q = { table, op, select, filters:[[col,op,val]], order:[[col,asc]], range:[a,b], limit, single, count, head, values, onConflict, returning }
-export async function runQuery(q, role = 'server') {
+export async function runQuery(q, role = 'server', actor = null) {
   const store = await kv('vd-db');
   const t = q.table;
   const op = q.op || 'select';
   if (t === 'admins') {
     if (role === 'public') throw new HttpError(403, 'Acesso negado');
-    return { data: [{ user_id: 'owner', role: 'owner' }], count: 1 };
+    const r = actor ? { user_id: actor.user.id, role: actor.role } : { user_id: 'owner', role: 'owner' };
+    return { data: [r], count: 1 };
   }
   if (!TABLES[t]) throw new HttpError(400, `Tabela desconhecida: ${t}`);
   if (role === 'public' && op !== 'select') throw new HttpError(403, 'Acesso negado');
@@ -357,7 +359,7 @@ async function deleteRows(store, t, rows) {
 const parseVec = (v) => (Array.isArray(v) ? v : JSON.parse(String(v))).map(Number);
 function dist(a, b) { let s = 0; for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
 
-export async function rpc(name, args = {}, role = 'server') {
+export async function rpc(name, args = {}, role = 'server', actor = null) {
   const store = await kv('vd-db');
   if (name === 'search_faces') {
     const evs = await loadRows(store, 'events', [['id', 'eq', args.p_event]]);
@@ -431,11 +433,15 @@ export async function rpc(name, args = {}, role = 'server') {
         last_order: os.map((o) => o.created_at).sort().at(-1) || null };
     }).sort((a, b) => String(b.last_order || '').localeCompare(String(a.last_order || '')));
   }
-  if (name === 'admin_team') {
-    return [{ user_id: 'owner', email: process.env.ADMIN_EMAIL || '', role: 'owner', created_at: null }];
-  }
-  if (name === 'grant_admin' || name === 'revoke_admin') {
-    throw new HttpError(400, 'Nesta versão o painel tem um único acesso (o do dono), definido nas variáveis ADMIN_EMAIL e ADMIN_PASSWORD do Netlify.');
+  if (name === 'admin_team') return teamList();
+  if (name === 'change_password') return changeOwnPassword(actor, args.p_current, args.p_new);
+  if (name === 'grant_admin' || name === 'revoke_admin' || name === 'reset_admin_password') {
+    if (role !== 'owner' && role !== 'server') throw new HttpError(403, 'Somente quem tem permissão de Dono pode mudar a equipe.');
+    if (name === 'grant_admin') return teamAdd(args.p_email, args.p_role || 'admin', args.p_password);
+    if (String(args.p_user) === 'owner') throw new HttpError(400, 'O acesso principal (dono) é definido nas variáveis do Netlify.');
+    if (actor && String(args.p_user) === actor.user.id) throw new HttpError(400, 'Você não pode remover ou redefinir o seu próprio acesso por aqui.');
+    if (name === 'revoke_admin') return teamRemove(args.p_user);
+    return teamResetPassword(args.p_user, args.p_password);
   }
   throw new HttpError(400, `Função desconhecida: ${name}`);
 }

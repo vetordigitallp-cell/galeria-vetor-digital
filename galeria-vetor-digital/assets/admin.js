@@ -1,5 +1,5 @@
 // Painel administrativo da Galeria Vetor Digital (acesso restrito à equipe).
-import { sb, CONFIGURED, el, ICONS, LOGO, money, dateTimeBR, publicUrl, toast, setupScreen, backBar, trackNav } from './core.js';
+import { sb, BACKEND, CONFIGURED, el, ICONS, LOGO, money, dateTimeBR, publicUrl, toast, setupScreen, backBar, trackNav } from './core.js';
 import { viewEvents, viewEventForm, viewEvent, isUploading, viewDelivery } from './admin-events.js';
 
 const app = document.getElementById('app');
@@ -75,17 +75,37 @@ function shell(active, nodes) {
     el('main', { class: 'content' }, nodes));
 }
 
+// Gráfico dos últimos 30 dias: sempre 30 colunas (dias sem venda aparecem vazios),
+// para que um único dia com venda não vire uma barra ocupando o gráfico inteiro.
+function salesChart(rows) {
+  const byDay = new Map(rows.map((d) => [d.day, d]));
+  const today = new Date(Date.now() - 3 * 36e5); // horário de Brasília
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const day = new Date(today.getTime() - i * 864e5).toISOString().slice(0, 10);
+    days.push(byDay.get(day) || { day, orders: 0, revenue_cents: 0 });
+  }
+  const total = days.reduce((a, d) => a + d.revenue_cents, 0);
+  const orders = days.reduce((a, d) => a + d.orders, 0);
+  if (!total) return el('p', { class: 'muted' }, 'As vendas dos últimos 30 dias aparecem aqui.');
+  const max = Math.max(...days.map((d) => d.revenue_cents));
+  const br = (iso) => iso.slice(8, 10) + '/' + iso.slice(5, 7);
+  const tip = (d) => `${br(d.day)}: ${money(d.revenue_cents)} · ${d.orders} ${d.orders === 1 ? 'pedido' : 'pedidos'}`;
+  return el('div', { class: 'chart' },
+    el('p', { class: 'muted', style: { margin: 0 } }, `${money(total)} em ${orders} ${orders === 1 ? 'pedido pago' : 'pedidos pagos'} · maior dia: ${money(max)}`),
+    el('div', { class: 'bars', role: 'img', 'aria-label': `Faturamento diário dos últimos 30 dias, total ${money(total)}` },
+      days.map((d) => el('div', { class: d.revenue_cents ? 'bar' : 'bar zero', title: tip(d),
+        style: { height: d.revenue_cents ? `${Math.max(6, (d.revenue_cents / max) * 100)}%` : '2px' } }))),
+    el('div', { class: 'bars-axis' }, el('span', {}, br(days[0].day)), el('span', {}, br(days[15].day)), el('span', {}, 'hoje')));
+}
+
 // ---------------------------------------------------------------- painel (indicadores)
 async function viewDashboard() {
   const { data: s, error } = await sb.rpc('admin_stats');
   if (error) throw error;
   const kpi = (label, value, hl) => el('div', { class: 'kpi' + (hl ? ' hl' : '') }, el('small', {}, label), el('b', {}, value));
   const n = (x) => Number(x || 0).toLocaleString('pt-BR');
-  const days = s.sales_by_day || [];
-  const max = Math.max(1, ...days.map((d) => d.revenue_cents));
-  const chart = days.length
-    ? el('div', { class: 'bars' }, days.map((d) => el('div', { style: { height: `${Math.max(3, (d.revenue_cents / max) * 100)}%` }, title: `${d.day}: ${money(d.revenue_cents)} (${d.orders} pedidos)` })))
-    : el('p', { class: 'muted' }, 'As vendas dos últimos 30 dias aparecem aqui.');
+  const chart = salesChart(s.sales_by_day || []);
   const top = s.top_photos || [];
   return [
     el('div', { class: 'page-head' }, el('div', {}, el('p', { class: 'eyebrow' }, 'Visão geral'), el('h1', {}, 'Painel')),
@@ -321,31 +341,88 @@ async function viewTeam() {
   const { data, error } = await sb.rpc('admin_team');
   if (error) throw error;
   const owner = me.role === 'owner';
-  const email = el('input', { class: 'input', type: 'email', placeholder: 'email@exemplo.com' });
-  const role = el('select', { class: 'input', style: { maxWidth: '200px' } }, el('option', { value: 'admin' }, 'Administrador'), el('option', { value: 'owner' }, 'Dono'));
-  const add = el('form', { class: 'card stack' }, el('h3', {}, 'Adicionar à equipe'),
-    el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, 'Primeiro crie o usuário no Supabase (Authentication > Users > Add user). Depois informe o e-mail aqui.'),
-    el('div', { class: 'row' }, email, role, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Dar acesso')));
+  const local = BACKEND === 'netlify';
+  const roleName = (r) => (r === 'owner' ? 'Dono (acesso total)' : 'Administrador');
+
+  // Adicionar pessoa (sócio, funcionário)
+  const email = el('input', { class: 'input', type: 'email', placeholder: 'email@exemplo.com', required: true, autocomplete: 'off' });
+  const role = el('select', { class: 'input' },
+    el('option', { value: 'admin' }, 'Administrador — tudo, menos mexer na equipe'),
+    el('option', { value: 'owner' }, 'Dono — acesso total, inclusive a equipe'));
+  const pass = el('input', { class: 'input', type: 'text', minlength: '10', placeholder: 'mínimo 10 caracteres', required: local, autocomplete: 'new-password' });
+  const gen = el('button', { class: 'btn btn-sm', type: 'button' }, 'Gerar senha');
+  gen.addEventListener('click', () => {
+    const abc = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const r = crypto.getRandomValues(new Uint32Array(14));
+    pass.value = Array.from(r, (x) => abc[x % abc.length]).join('');
+  });
+  const add = el('form', { class: 'card stack' }, el('h3', {}, 'Adicionar pessoa à equipe'),
+    local
+      ? el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, 'Defina uma senha inicial e passe para a pessoa por um canal seguro (ligação ou pessoalmente). Ela entra em ', el('b', {}, location.origin + '/admin'), ' e pode trocar a senha em Equipe → Minha senha.')
+      : el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, 'Primeiro crie o usuário no Supabase (Authentication > Users > Add user). Depois informe o e-mail aqui.'),
+    el('div', { class: 'form-grid two' },
+      el('div', { class: 'field' }, el('label', {}, 'E-mail da pessoa'), email),
+      el('div', { class: 'field' }, el('label', {}, 'Permissão'), role)),
+    local ? el('div', { class: 'field' }, el('label', {}, 'Senha inicial'), el('div', { class: 'row' }, pass, gen)) : null,
+    el('div', {}, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Dar acesso')));
   add.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const { error: err } = await sb.rpc('grant_admin', { p_email: email.value, p_role: role.value });
+    const { error: err } = await sb.rpc('grant_admin', { p_email: email.value, p_role: role.value, p_password: pass.value });
     if (err) return toast(err.message, 6000);
-    toast('Acesso concedido'); route();
+    toast('Acesso criado. Passe o e-mail e a senha para a pessoa.', 6000); route();
   });
+
+  const actions = (m) => {
+    if (!owner || m.main || m.user_id === me.user.id) return '';
+    const rm = el('button', { class: 'btn btn-sm btn-danger' }, 'Remover');
+    rm.addEventListener('click', async () => {
+      if (!confirm(`Remover o acesso de ${m.email}? A pessoa sai do painel na hora.`)) return;
+      const { error: err } = await sb.rpc('revoke_admin', { p_user: m.user_id });
+      if (err) return toast(err.message, 5000);
+      toast('Acesso removido'); route();
+    });
+    if (!local) return rm;
+    const rs = el('button', { class: 'btn btn-sm' }, 'Nova senha');
+    rs.addEventListener('click', async () => {
+      const np = prompt(`Nova senha para ${m.email} (mínimo 10 caracteres):`);
+      if (np == null) return;
+      const { error: err } = await sb.rpc('reset_admin_password', { p_user: m.user_id, p_password: np });
+      if (err) return toast(err.message, 5000);
+      toast('Senha redefinida. As sessões abertas dessa pessoa foram encerradas.', 5000);
+    });
+    return el('div', { class: 'row', style: { justifyContent: 'flex-end' } }, rs, rm);
+  };
+
+  // Minha senha (para quem não é o acesso principal)
+  let mine = null;
+  if (local && me.user.id !== 'owner') {
+    const cur = el('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
+    const nw = el('input', { class: 'input', type: 'password', minlength: '10', autocomplete: 'new-password', required: true });
+    mine = el('form', { class: 'card stack' }, el('h3', {}, 'Minha senha'),
+      el('div', { class: 'form-grid two' }, el('div', { class: 'field' }, el('label', {}, 'Senha atual'), cur), el('div', { class: 'field' }, el('label', {}, 'Nova senha (mínimo 10)'), nw)),
+      el('div', {}, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Trocar minha senha')));
+    mine.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const { error: err } = await sb.rpc('change_password', { p_current: cur.value, p_new: nw.value });
+      if (err) return toast(err.message, 5000);
+      toast('Senha trocada. Entre de novo com a senha nova.', 5000);
+      await sb.auth.signOut(); boot();
+    });
+  }
+
   return [
     el('div', { class: 'page-head' }, el('div', {}, el('p', { class: 'eyebrow' }, 'Permissões'), el('h1', {}, 'Equipe'))),
     el('div', { class: 'tbl-wrap' }, el('table', { class: 'tbl' },
       el('thead', {}, el('tr', {}, el('th', {}, 'E-mail'), el('th', {}, 'Permissão'), el('th', {}, 'Desde'), el('th', {}, ''))),
       el('tbody', {}, data.map((m) => el('tr', {},
-        el('td', {}, m.email), el('td', {}, m.role === 'owner' ? 'Dono' : 'Administrador'), el('td', {}, dateTimeBR(m.created_at)),
-        el('td', { class: 'num' }, owner && m.user_id !== me.user.id ? el('button', { class: 'btn btn-sm btn-danger', onclick: async () => {
-          if (!confirm(`Remover o acesso de ${m.email}?`)) return;
-          const { error: err } = await sb.rpc('revoke_admin', { p_user: m.user_id });
-          if (err) return toast(err.message, 5000);
-          toast('Acesso removido'); route();
-        } }, 'Remover') : '')))))),
-    owner ? add : el('p', { class: 'muted' }, 'Somente o dono pode adicionar ou remover pessoas da equipe.')
-  ];
+        el('td', {}, m.email, m.main ? el('span', { class: 'tag', style: { marginLeft: '8px' } }, 'Principal') : null),
+        el('td', {}, roleName(m.role)),
+        el('td', {}, m.created_at ? dateTimeBR(m.created_at) : '—'),
+        el('td', { class: 'num' }, actions(m))))))),
+    owner ? add : el('p', { class: 'muted' }, 'Somente quem tem permissão de Dono pode adicionar ou remover pessoas da equipe.'),
+    mine,
+    local ? el('p', { class: 'muted', style: { fontSize: '13px' } }, 'O acesso Principal é o e-mail e a senha das variáveis ADMIN_EMAIL e ADMIN_PASSWORD do Netlify. Para trocá-los, altere lá e publique de novo.') : null
+  ].filter(Boolean);
 }
 
 // ---------------------------------------------------------------- roteador
@@ -408,7 +485,7 @@ async function boot() {
   }
   me = await whoAmI();
   if (!me) return loginScreen();
-  if (!me.role) { await sb.auth.signOut(); return loginScreen('Este usuário não tem permissão de acesso ao painel. Peça ao dono para liberar seu e-mail em Equipe.'); }
+  if (!me.role) { await sb.auth.signOut(); return loginScreen('Sua sessão terminou ou este acesso foi removido. Entre novamente; se não conseguir, fale com o dono do painel.'); }
   if (!location.hash || location.hash === '#') location.hash = '#/painel';
   else route();
 }

@@ -148,7 +148,7 @@ export function createClient() {
       },
       async signOut() { writeSession(null); return { error: null }; },
       async resetPasswordForEmail() {
-        return { error: { message: 'Nesta versão, a senha do painel é definida na variável ADMIN_PASSWORD do Netlify. Troque lá e faça um novo deploy.' } };
+        return { error: { message: 'Esqueceu a senha? Se você é da equipe, peça ao dono uma senha nova (Equipe → Nova senha). Se é o acesso principal, troque a variável ADMIN_PASSWORD no Netlify e publique de novo.' } };
       },
       async updateUser() {
         return { error: { message: 'Troque a senha na variável ADMIN_PASSWORD do Netlify.' } };
