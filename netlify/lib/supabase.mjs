@@ -73,6 +73,8 @@ export async function requireAdmin(req) {
   if (!USE_SUPABASE) {
     const a = await adminFromRequest(req);
     if (!a) throw new HttpError(401, 'Sessão expirada. Faça login novamente.');
+    // Pedidos e pagamentos não fazem parte do acesso de fotógrafo.
+    if (a.role === 'photographer') throw new HttpError(403, 'Seu acesso de fotógrafo não inclui pedidos e pagamentos.');
     return a;
   }
   const auth = req.headers.get('authorization') || '';

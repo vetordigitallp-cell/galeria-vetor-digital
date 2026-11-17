@@ -293,8 +293,12 @@ function eventHeader(ev, count, withFaceCta = true) {
     ev.description ? el('p', { class: 'desc' }, ev.description) : null,
     withFaceCta && ev.face_search ? el('div', { class: 'face-cta' },
       el('div', { class: 'ico', html: ICONS.face }),
-      el('div', {}, el('b', {}, 'ENCONTRE SUAS FOTOS PELO ROSTO'), el('p', {}, 'Envie uma selfie e veja só as fotos em que você aparece. A selfie não sai do seu celular.')),
-      el('a', { class: 'btn btn-primary', href: `#/e/${ev.slug}/rosto`, html: ICONS.camera + ' Enviar selfie' })) : null));
+      el('div', {}, el('b', {}, 'ENCONTRE SUAS FOTOS PELO ROSTO'), el('p', {}, 'Envie uma selfie (ou digite seu número de peito) e veja só as fotos em que você aparece. A selfie não sai do seu celular.')),
+      el('a', { class: 'btn btn-primary', href: `#/e/${ev.slug}/rosto`, html: ICONS.camera + ' Enviar selfie' })) : null,
+    withFaceCta && !ev.face_search ? el('div', { class: 'face-cta' },
+      el('div', { class: 'ico', html: ICONS.face }),
+      el('div', {}, el('b', {}, 'ENCONTRE SUAS FOTOS PELO NÚMERO'), el('p', {}, 'Digite o seu número de peito para ver as fotos que o fotógrafo separou para você.')),
+      el('a', { class: 'btn btn-primary', href: `#/e/${ev.slug}/rosto` }, 'Buscar pelo número')) : null));
 }
 
 async function viewEvent(slug, rid) {
@@ -339,8 +343,38 @@ async function viewFace(slug, rid) {
   const flow = el('div', { class: 'face-flow' });
   // O botão Voltar do topo da página leva de volta às fotos do evento.
 
+  const status = el('div', { class: 'card stack', hidden: true });
+  const results = el('div', {});
+
+  // Busca pelo número de peito: encontra a pasta que o fotógrafo montou para o atleta.
+  const bibIn = el('input', { class: 'input', inputmode: 'numeric', placeholder: 'Ex.: 1234', 'aria-label': 'Número de peito', style: { maxWidth: '180px' } });
+  const bibBtn = el('button', { class: 'btn' }, 'Buscar pelo número');
+  const bibForm = el('form', { class: 'card stack bib-card' },
+    el('b', {}, 'Ou procure pelo número de peito'),
+    el('p', { class: 'muted', style: { margin: 0, fontSize: '14px' } }, 'Funciona quando o fotógrafo já separou suas fotos numa pasta com o seu número.'),
+    el('div', { class: 'row' }, bibIn, bibBtn));
+  bibForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const bib = bibIn.value.replace(/\D+/g, '');
+    if (!bib) return bibIn.focus();
+    bibBtn.disabled = true;
+    try {
+      const { data, error } = await sb.rpc('search_bib', { p_event: ev.id, p_bib: bib });
+      if (error) throw new Error('Não foi possível buscar agora. Tente novamente.');
+      const ids = (data || []).map((r) => r.photo_id);
+      const photos = ids.length ? await fetchPhotosByIds(ids) : [];
+      if (rid !== renderId) return;
+      status.hidden = false;
+      status.replaceChildren(el('div', {}, el('b', { style: { fontSize: '20px' } }, photos.length ? `${plural(photos.length, 'foto', 'fotos')} com o número ${bib}` : `Nenhuma pasta com o número ${bib}`),
+        el('p', { class: 'muted', style: { margin: '4px 0 0', fontSize: '14px' } }, photos.length ? 'Confira as fotos e adicione ao carrinho.' : 'Tente pelo rosto ou veja todas as fotos do evento.')));
+      results.replaceChildren(...(photos.length ? faceResults(photos, ev) : []));
+      status.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      status.hidden = false; status.replaceChildren(el('div', { class: 'alert err' }, err.message));
+    } finally { bibBtn.disabled = false; }
+  });
   if (!ev.face_search) {
-    flow.append(el('div', { class: 'alert' }, 'A busca pelo rosto não está disponível para este evento.'));
+    flow.append(el('div', { class: 'alert' }, 'A busca pelo rosto não está disponível para este evento.'), bibForm, status, results);
     return [eventHeader(ev, null, false), el('div', { class: 'container' }, flow)];
   }
 
@@ -362,9 +396,7 @@ async function viewFace(slug, rid) {
       el('span', {}, 'Li a ', el('a', { href: '#/privacidade', target: '_blank' }, 'política de privacidade'), ' e autorizo, de forma livre e explícita, o uso da minha selfie para localizar minhas fotos neste evento.')),
     el('div', { class: 'row' }, start, input));
 
-  const status = el('div', { class: 'card stack', hidden: true });
-  const results = el('div', {});
-  flow.append(consent, status, results);
+  flow.append(consent, bibForm, status, results);
 
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
@@ -384,6 +416,7 @@ async function viewFace(slug, rid) {
       descriptor.fill(0);
       if (error) throw new Error('Não foi possível fazer a busca agora. Tente novamente.');
       const ids = (data || []).map((r) => r.photo_id);
+      const viaFolder = (data || []).filter((r) => r.via === 'pasta').length;
       const photos = ids.length ? await fetchPhotosByIds(ids) : [];
       if (rid !== renderId) return;
       const order = new Map(ids.map((id, n) => [id, n]));
@@ -393,7 +426,8 @@ async function viewFace(slug, rid) {
       thumb.src = canvas.toDataURL('image/jpeg', 0.7);
       status.replaceChildren(el('div', { class: 'row' }, thumb,
         el('div', {}, el('b', { style: { fontSize: '20px' } }, photos.length ? plural(photos.length, 'foto encontrada', 'fotos encontradas') : 'Nenhuma foto encontrada'),
-          el('p', { class: 'muted', style: { margin: '4px 0 0', fontSize: '14px' } }, photos.length ? 'Confira as fotos, desmarque as que não são suas e adicione ao carrinho.' : 'Tente outra selfie (de frente, boa luz, sem boné ou óculos escuros) ou veja todas as fotos do evento.'))),
+          el('p', { class: 'muted', style: { margin: '4px 0 0', fontSize: '14px' } }, photos.length ? 'Confira as fotos, desmarque as que não são suas e adicione ao carrinho.' : 'Tente outra selfie (de frente, boa luz, sem boné ou óculos escuros) ou veja todas as fotos do evento.'),
+          viaFolder && photos.length ? el('p', { class: 'muted', style: { margin: '4px 0 0', fontSize: '14px' } }, `Inclui ${plural(viaFolder, 'foto', 'fotos')} que o fotógrafo separou na sua pasta (de costas, de longe…).`) : null)),
         el('div', { class: 'row' }, el('button', { class: 'btn btn-sm', onclick: () => input.click(), html: ICONS.camera + ' Tentar outra selfie' }), el('a', { class: 'btn btn-sm', href: `#/e/${ev.slug}` }, 'Ver todas as fotos'),
           photos.length ? null : supportLink(await loadSettings(), `não encontrei minha foto no evento ${ev.name}`, 'Não achou? Fale com o suporte')));
       if (photos.length) results.replaceChildren(...faceResults(photos, ev));

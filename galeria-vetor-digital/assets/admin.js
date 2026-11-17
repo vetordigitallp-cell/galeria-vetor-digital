@@ -59,6 +59,10 @@ async function passwordRecovery() {
 const NAV = [
   ['painel', 'Painel'], ['eventos', 'Eventos'], ['entrega', 'Entrega'], ['pedidos', 'Pedidos'], ['clientes', 'Clientes'], ['config', 'Configurações'], ['equipe', 'Equipe']
 ];
+// O fotógrafo só vê os eventos (e a troca da própria senha).
+const PHOTOG_NAV = [['eventos', 'Eventos'], ['senha', 'Minha senha']];
+export const ROLE_NAMES = { owner: 'Dono', admin: 'Administrador', photographer: 'Fotógrafo' };
+const isPhotographer = () => me && me.role === 'photographer';
 
 function shell(active, nodes) {
   const logout = el('button', { class: 'btn btn-sm btn-ghost' }, 'Sair');
@@ -66,13 +70,27 @@ function shell(active, nodes) {
     if (isUploading() && !confirm('Há um envio em andamento. Sair mesmo assim?')) return;
     await sb.auth.signOut(); boot();
   });
-  return el('div', { class: 'adm' },
-    el('aside', { class: 'side' },
-      el('a', { class: 'brand', href: '#/painel', html: LOGO }, el('div', {}, el('b', {}, 'Vetor Digital'), el('span', {}, 'Painel'))),
-      el('nav', { 'aria-label': 'Painel' }, NAV.map(([k, t]) => el('a', { href: `#/${k}`, 'aria-current': active === k ? 'page' : false }, t))),
-      el('div', { class: 'who' }, el('span', {}, me.user.email), el('span', { class: 'tag on', style: { justifySelf: 'start' } }, me.role === 'owner' ? 'Dono' : 'Administrador'),
-        el('a', { href: './', target: '_blank', class: 'muted' }, 'Abrir o site ↗'), logout)),
-    el('main', { class: 'content' }, nodes));
+  const items = isPhotographer() ? PHOTOG_NAV : NAV;
+  const current = items.find(([k]) => k === active);
+  // Menu "sanduíche": no celular as áreas ficam escondidas e abrem num toque.
+  const toggle = el('button', { class: 'menu-btn', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'adm-menu', html: '<i class="burger" aria-hidden="true"><span></span><span></span><span></span></i>' },
+    el('em', {}, current ? current[1] : 'Menu'));
+  const menu = el('div', { class: 'side-menu', id: 'adm-menu' },
+    el('nav', { 'aria-label': 'Painel' }, items.map(([k, t]) => el('a', { href: `#/${k}`, 'aria-current': active === k ? 'page' : false }, t))),
+    el('div', { class: 'who' }, el('span', {}, me.user.email), el('span', { class: 'tag on', style: { justifySelf: 'start' } }, ROLE_NAMES[me.role] || 'Equipe'),
+      el('a', { href: './', target: '_blank', class: 'muted' }, 'Abrir o site ↗'), logout));
+  const side = el('aside', { class: 'side' },
+    el('div', { class: 'side-top' },
+      el('a', { class: 'brand', href: isPhotographer() ? '#/eventos' : '#/painel', html: LOGO }, el('div', {}, el('b', {}, 'Vetor Digital'), el('span', {}, 'Painel'))),
+      toggle),
+    menu);
+  toggle.addEventListener('click', () => {
+    const open = !side.classList.contains('open');
+    side.classList.toggle('open', open);
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+  menu.addEventListener('click', (e) => { if (e.target.closest('nav a')) side.classList.remove('open'); });
+  return el('div', { class: 'adm' }, side, el('main', { class: 'content' }, nodes));
 }
 
 // Gráfico dos últimos 30 dias: sempre 30 colunas (dias sem venda aparecem vazios),
@@ -337,16 +355,40 @@ async function viewSettings() {
 }
 
 // ---------------------------------------------------------------- equipe e permissões
+// Troca da própria senha (pessoas da equipe; o acesso principal usa a variável do Netlify).
+function myPasswordForm() {
+  const cur = el('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
+  const nw = el('input', { class: 'input', type: 'password', minlength: '10', autocomplete: 'new-password', required: true });
+  const form = el('form', { class: 'card stack' }, el('h3', {}, 'Minha senha'),
+    el('div', { class: 'form-grid two' }, el('div', { class: 'field' }, el('label', {}, 'Senha atual'), cur), el('div', { class: 'field' }, el('label', {}, 'Nova senha (mínimo 10)'), nw)),
+    el('div', {}, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Trocar minha senha')));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const { error: err } = await sb.rpc('change_password', { p_current: cur.value, p_new: nw.value });
+    if (err) return toast(err.message, 5000);
+    toast('Senha trocada. Entre de novo com a senha nova.', 5000);
+    await sb.auth.signOut(); boot();
+  });
+  return form;
+}
+
+async function viewMyPassword() {
+  const head = el('div', { class: 'page-head' }, el('div', {}, el('p', { class: 'eyebrow' }, 'Sua conta'), el('h1', {}, 'Minha senha')));
+  if (me.user.id === 'owner') return [head, el('p', { class: 'muted' }, 'A senha do acesso principal é a variável ADMIN_PASSWORD do Netlify. Para trocá-la, altere lá e publique de novo.')];
+  return [head, el('p', { class: 'muted', style: { margin: 0 } }, `Você entra como ${me.user.email} (${ROLE_NAMES[me.role] || 'Equipe'}).`), myPasswordForm()];
+}
+
 async function viewTeam() {
   const { data, error } = await sb.rpc('admin_team');
   if (error) throw error;
   const owner = me.role === 'owner';
   const local = BACKEND === 'netlify';
-  const roleName = (r) => (r === 'owner' ? 'Dono (acesso total)' : 'Administrador');
+  const roleName = (r) => ({ owner: 'Dono (acesso total)', admin: 'Administrador', photographer: 'Fotógrafo' }[r] || r);
 
   // Adicionar pessoa (sócio, funcionário)
   const email = el('input', { class: 'input', type: 'email', placeholder: 'email@exemplo.com', required: true, autocomplete: 'off' });
   const role = el('select', { class: 'input' },
+    el('option', { value: 'photographer' }, 'Fotógrafo — só cria eventos e cuida das fotos'),
     el('option', { value: 'admin' }, 'Administrador — tudo, menos mexer na equipe'),
     el('option', { value: 'owner' }, 'Dono — acesso total, inclusive a equipe'));
   const pass = el('input', { class: 'input', type: 'text', minlength: '10', placeholder: 'mínimo 10 caracteres', required: local, autocomplete: 'new-password' });
@@ -393,22 +435,7 @@ async function viewTeam() {
     return el('div', { class: 'row', style: { justifyContent: 'flex-end' } }, rs, rm);
   };
 
-  // Minha senha (para quem não é o acesso principal)
-  let mine = null;
-  if (local && me.user.id !== 'owner') {
-    const cur = el('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
-    const nw = el('input', { class: 'input', type: 'password', minlength: '10', autocomplete: 'new-password', required: true });
-    mine = el('form', { class: 'card stack' }, el('h3', {}, 'Minha senha'),
-      el('div', { class: 'form-grid two' }, el('div', { class: 'field' }, el('label', {}, 'Senha atual'), cur), el('div', { class: 'field' }, el('label', {}, 'Nova senha (mínimo 10)'), nw)),
-      el('div', {}, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Trocar minha senha')));
-    mine.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const { error: err } = await sb.rpc('change_password', { p_current: cur.value, p_new: nw.value });
-      if (err) return toast(err.message, 5000);
-      toast('Senha trocada. Entre de novo com a senha nova.', 5000);
-      await sb.auth.signOut(); boot();
-    });
-  }
+  const mine = local && me.user.id !== 'owner' ? myPasswordForm() : null;
 
   return [
     el('div', { class: 'page-head' }, el('div', {}, el('p', { class: 'eyebrow' }, 'Permissões'), el('h1', {}, 'Equipe'))),
@@ -429,6 +456,8 @@ async function viewTeam() {
 // Tela "pai" de cada área do painel, usada pelo botão Voltar quando não há tela anterior nesta aba.
 function adminBackFor(p0, p1, p2) {
   if (!p0 || p0 === 'painel') return null; // visão geral não tem Voltar
+  if (p0 === 'eventos' && !p1 && window.__vdRole === 'photographer') return null; // início do fotógrafo
+  if (p0 === 'senha') return backBar(window.__vdRole === 'photographer' ? '#/eventos' : '#/painel', 'Voltar');
   if (p0 === 'eventos' && p1 && p2 === 'editar') return backBar(`#/eventos/${p1}`, 'Voltar');
   if (p0 === 'eventos' && p1) return backBar('#/eventos', 'Voltar');
   if (p0 === 'pedidos' && p1) return backBar('#/pedidos', 'Voltar');
@@ -441,7 +470,10 @@ async function route() {
   const [p0, p1, p2] = parts;
   let active = p0 || 'painel';
   let view;
-  if (!p0 || p0 === 'painel') view = viewDashboard();
+  // Fotógrafo: só eventos e "Minha senha"; qualquer outra área volta para Eventos.
+  if (isPhotographer() && !['eventos', 'senha'].includes(p0)) { location.replace('#/eventos'); return; }
+  if (p0 === 'senha') view = viewMyPassword();
+  else if (!p0 || p0 === 'painel') view = viewDashboard();
   else if (p0 === 'eventos' && p1 === 'novo') view = viewEventForm(null);
   else if (p0 === 'eventos' && p1 && p2 === 'editar') view = viewEventForm(p1);
   else if (p0 === 'eventos' && p1) view = viewEvent(p1);
@@ -486,7 +518,8 @@ async function boot() {
   me = await whoAmI();
   if (!me) return loginScreen();
   if (!me.role) { await sb.auth.signOut(); return loginScreen('Sua sessão terminou ou este acesso foi removido. Entre novamente; se não conseguir, fale com o dono do painel.'); }
-  if (!location.hash || location.hash === '#') location.hash = '#/painel';
+  window.__vdRole = me.role;
+  if (!location.hash || location.hash === '#') location.hash = me.role === 'photographer' ? '#/eventos' : '#/painel';
   else route();
 }
 boot();

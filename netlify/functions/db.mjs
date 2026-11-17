@@ -7,7 +7,7 @@ import { adminFromRequest } from '../lib/auth.mjs';
 export default handle(async (req) => {
   if (req.method !== 'POST') throw new HttpError(405, 'Método não permitido');
   const admin = await adminFromRequest(req);
-  const role = admin ? (admin.role === 'owner' ? 'owner' : 'admin') : 'public';
+  const role = admin ? (['owner', 'photographer'].includes(admin.role) ? admin.role : 'admin') : 'public';
   const body = await readJson(req);
   if (new URL(req.url).pathname.endsWith('/rpc')) {
     return json(200, { data: await rpc(String(body.name || ''), body.args || {}, role, admin) });

@@ -82,7 +82,7 @@ export async function login(email, password, ip) {
 // só como hash (scrypt + sal). Cada pessoa tem um número de versão: remover a pessoa ou trocar a
 // senha invalida na hora as sessões abertas dela.
 const TEAM_KEY = 'sys/team';
-const ROLES = new Set(['admin', 'owner']);
+const ROLES = new Set(['admin', 'owner', 'photographer']);
 async function loadTeam(store) { return (await store.getJSON(TEAM_KEY)) || []; }
 function scrypt(pw, salt) {
   return new Promise((res, rej) => crypto.scrypt(pw, salt, 64, { N: 16384, r: 8, p: 1 }, (e, k) => (e ? rej(e) : res(k))));

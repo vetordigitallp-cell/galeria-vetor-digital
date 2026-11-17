@@ -29,10 +29,17 @@ const TABLES = {
   customers: { part: null, unique: [['email']] },
   orders: { part: null, unique: [['code']] },
   order_items: { part: 'order_id', intId: true },
-  payment_events: { part: 'order_id', intId: true }
+  payment_events: { part: 'order_id', intId: true },
+  // Pastas de pessoas: o fotógrafo junta numa pasta todas as fotos de alguém (inclusive de costas).
+  // Quando a busca pelo rosto acha qualquer foto da pasta, o cliente recebe a pasta inteira.
+  folders: { part: 'event_id' },
+  folder_photos: { part: 'event_id', unique: [['folder_id', 'photo_id']] }
 };
 
 const PUBLIC_TABLES = new Set(['settings', 'events', 'photos']);
+// Fotógrafo: só eventos e fotos (nada de pedidos, clientes, configurações, faturamento ou equipe).
+const PHOTOGRAPHER_TABLES = new Set(['settings', 'events', 'photos', 'photo_faces', 'folders', 'folder_photos']);
+export const normBib = (v) => String(v ?? '').replace(/\D+/g, '').replace(/^0+(?=\d)/, '');
 const HIDDEN_PHOTO_COLS = ['original_path', 'original_name'];
 
 let seq = 0;
@@ -143,6 +150,7 @@ const singular = (t) => t.replace(/s$/, '');
 async function resolveEmbeds(store, t, rows, spec, role) {
   for (const e of spec.filter((x) => x.embed)) {
     if (role === 'public' && !PUBLIC_TABLES.has(e.table)) throw new HttpError(403, 'Acesso negado');
+    if (role === 'photographer' && !PHOTOGRAPHER_TABLES.has(e.table)) throw new HttpError(403, 'Acesso negado');
     const fk = `${singular(e.table)}_id`;
     const manyToOne = rows.some((r) => fk in r);
     const sub = parseSelect(e.cols);
@@ -228,6 +236,11 @@ export async function runQuery(q, role = 'server', actor = null) {
   if (!TABLES[t]) throw new HttpError(400, `Tabela desconhecida: ${t}`);
   if (role === 'public' && op !== 'select') throw new HttpError(403, 'Acesso negado');
   if (role === 'public' && t === 'photo_faces') throw new HttpError(403, 'Acesso negado');
+  if (role === 'photographer') {
+    if (!PHOTOGRAPHER_TABLES.has(t)) throw new HttpError(403, 'Seu acesso de fotógrafo não inclui esta área.');
+    if (t === 'settings' && op !== 'select') throw new HttpError(403, 'Seu acesso de fotógrafo não inclui as configurações.');
+    if (t === 'events' && op === 'delete') throw new HttpError(403, 'Somente o dono ou um administrador pode excluir eventos.');
+  }
 
   if (op === 'insert' || op === 'upsert') return { data: await insertRows(store, t, q.values, op === 'upsert' ? q.onConflict : null) };
   const filters = q.filters || [];
@@ -285,6 +298,7 @@ function withDefaults(t, row, prev) {
   if (t === 'events') {
     r.category ??= 'Corrida de rua'; r.price_cents ??= 1500; r.published ??= false; r.face_search ??= true; r.updated_at = nowIso();
   }
+  if (t === 'folders') { r.name = String(r.name || '').trim().slice(0, 80) || 'Pasta'; r.bib = normBib(r.bib) || null; }
   if (t === 'photos') { r.published ??= true; r.faces_indexed ??= false; r.face_count ??= 0; r.price_cents ??= null; }
   if (t === 'orders') { r.status ??= 'pending'; r.needs_review ??= false; r.pix_discount_pct ??= 0; }
   if (t === 'customers') r.updated_at = nowIso();
@@ -350,7 +364,7 @@ async function deleteRows(store, t, rows) {
   // cascatas do banco anterior
   if (t === 'events') {
     for (const ev of rows) {
-      for (const sub of ['photos', 'photo_faces']) {
+      for (const sub of ['photos', 'photo_faces', 'folders', 'folder_photos']) {
         const subRows = await loadRows(store, sub, [['event_id', 'eq', ev.id]]);
         if (subRows.length) await deleteRows(store, sub, subRows);
       }
@@ -366,6 +380,14 @@ async function deleteRows(store, t, rows) {
     for (const [eventId, ids] of byEvent) {
       const f = (await loadRows(store, 'photo_faces', [['event_id', 'eq', eventId]])).filter((x) => ids.has(String(x.photo_id)));
       if (f.length) await deleteRows(store, 'photo_faces', f);
+      const fp = (await loadRows(store, 'folder_photos', [['event_id', 'eq', eventId]])).filter((x) => ids.has(String(x.photo_id)));
+      if (fp.length) await deleteRows(store, 'folder_photos', fp);
+    }
+  }
+  if (t === 'folders') {
+    for (const fo of rows) {
+      const fp = (await loadRows(store, 'folder_photos', [['event_id', 'eq', fo.event_id]])).filter((x) => String(x.folder_id) === String(fo.id));
+      if (fp.length) await deleteRows(store, 'folder_photos', fp);
     }
   }
   return rows;
@@ -391,15 +413,53 @@ export async function rpc(name, args = {}, role = 'server', actor = null) {
       const d = dist(q, parseVec(f.embedding));
       if (d < th && d < (best.get(f.photo_id) ?? Infinity)) best.set(f.photo_id, d);
     }
-    return [...best].map(([photo_id, distance]) => ({ photo_id, distance })).sort((a, b) => a.distance - b.distance).slice(0, 500);
+    const found = [...best].map(([photo_id, distance]) => ({ photo_id, distance })).sort((a, b) => a.distance - b.distance).slice(0, 500);
+    // Pastas: se o rosto apareceu em alguma foto de uma pasta, entrega a pasta inteira
+    // (fotos de costas, de lado, de longe… que o fotógrafo juntou ali).
+    const links = await loadRows(store, 'folder_photos', [['event_id', 'eq', ev.id]]);
+    if (!links.length || !found.length) return found;
+    const hit = new Set(found.map((f) => String(f.photo_id)));
+    const folders = new Set(links.filter((l) => hit.has(String(l.photo_id))).map((l) => String(l.folder_id)));
+    const extra = [];
+    for (const l of links) {
+      const id = String(l.photo_id);
+      if (folders.has(String(l.folder_id)) && !hit.has(id) && photos.has(id)) { hit.add(id); extra.push({ photo_id: l.photo_id, distance: null, via: 'pasta' }); }
+    }
+    return [...found, ...extra];
+  }
+  // Busca pelo número de peito (camisa), a partir das pastas montadas pelo fotógrafo.
+  if (name === 'search_bib') {
+    const bib = normBib(args.p_bib);
+    if (!bib) return [];
+    const evs = await loadRows(store, 'events', [['id', 'eq', args.p_event]]);
+    const ev = evs.find((e) => String(e.id) === String(args.p_event));
+    if (!ev || !ev.published) return [];
+    const folders = new Set((await loadRows(store, 'folders', [['event_id', 'eq', ev.id]])).filter((f) => f.bib === bib).map((f) => String(f.id)));
+    if (!folders.size) return [];
+    const photos = new Set((await loadRows(store, 'photos', [['event_id', 'eq', ev.id]])).filter((p) => p.published).map((p) => String(p.id)));
+    const seen = new Set();
+    return (await loadRows(store, 'folder_photos', [['event_id', 'eq', ev.id]]))
+      .filter((l) => folders.has(String(l.folder_id)) && photos.has(String(l.photo_id)) && !seen.has(String(l.photo_id)) && seen.add(String(l.photo_id)))
+      .map((l) => ({ photo_id: l.photo_id, via: 'numero' }));
   }
   if (role === 'public') throw new HttpError(403, 'Acesso negado');
+  if (role === 'photographer' && !['warm_event', 'purge_event_faces', 'change_password', 'folder_counts'].includes(name)) {
+    throw new HttpError(403, 'Seu acesso de fotógrafo não inclui esta área.');
+  }
+  // Quantidade de fotos em cada pasta de um evento (para o painel).
+  if (name === 'folder_counts') {
+    const links = await loadRows(store, 'folder_photos', [['event_id', 'eq', args.p_event]]);
+    const c = {};
+    for (const l of links) c[l.folder_id] = (c[l.folder_id] || 0) + 1;
+    return c;
+  }
 
   // Deixa prontos (em cache) os dados do evento: chamado pelo painel durante e depois do envio,
   // para que a primeira busca por rosto ou abertura da galeria não precise montar tudo do zero.
   if (name === 'warm_event') {
     const photos = await loadRows(store, 'photos', [['event_id', 'eq', args.p_event]]);
     const faces = await loadRows(store, 'photo_faces', [['event_id', 'eq', args.p_event]]);
+    await loadRows(store, 'folder_photos', [['event_id', 'eq', args.p_event]]);
     return { photos: photos.length, faces: faces.length };
   }
   if (name === 'purge_event_faces') {

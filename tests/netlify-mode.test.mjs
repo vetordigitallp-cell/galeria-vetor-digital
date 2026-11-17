@@ -176,3 +176,45 @@ test('equipe: dono adiciona sócio, sócio entra, não mexe na equipe e perde ac
   assert.equal(team.length, 1);
   assert.ok(!JSON.stringify(team).includes('hash'));
 });
+
+// ---------------------------------------------------------------- fotógrafo e pastas
+test('fotógrafo: só eventos e fotos; pastas ampliam a busca por rosto e por número', async () => {
+  const { login, adminFromRequest } = await import('../netlify/lib/auth.mjs');
+  const { rpc, runQuery } = await import('../netlify/lib/db.mjs');
+  const req = (t) => new Request('http://x/api/db', { headers: { authorization: 'Bearer ' + t } });
+  const owner = await adminFromRequest(req((await login(process.env.ADMIN_EMAIL, process.env.ADMIN_PASSWORD, '10.1.0.1')).access_token));
+  await rpc('grant_admin', { p_email: 'foto@x.com', p_role: 'photographer', p_password: 'senha-do-fotografo' }, 'owner', owner);
+  const ph = await adminFromRequest(req((await login('foto@x.com', 'senha-do-fotografo', '10.1.0.2')).access_token));
+  assert.equal(ph.role, 'photographer');
+  const R = 'photographer';
+  // pode: criar evento, fotos, pastas
+  const ev = (await runQuery({ table: 'events', op: 'insert', values: [{ name: 'Corrida F', slug: 'corrida-f', published: true, face_search: true }] }, R, ph)).data[0];
+  const ids = ['a', 'b', 'c', 'd'].map((x) => `00000000-0000-4000-8000-00000000000${'abcd'.indexOf(x)}`);
+  await runQuery({ table: 'photos', op: 'insert', values: ids.map((id, i) => ({ id, event_id: ev.id, code: 'P' + i, original_name: `p${i}.jpg`, published: true })) }, R, ph);
+  const vec = (v) => '[' + Array.from({ length: 128 }, (_, i) => (i === 0 ? v : 0)).join(',') + ']';
+  await runQuery({ table: 'photo_faces', op: 'insert', values: [{ event_id: ev.id, photo_id: ids[0], embedding: vec(1) }, { event_id: ev.id, photo_id: ids[3], embedding: vec(-1) }] }, R, ph);
+  const fo = (await runQuery({ table: 'folders', op: 'insert', values: [{ event_id: ev.id, name: 'Atleta 1', bib: 'Nº 0123' }] }, R, ph)).data[0];
+  assert.equal(fo.bib, '123');
+  await runQuery({ table: 'folder_photos', op: 'insert', values: [ids[0], ids[1], ids[2]].map((photo_id) => ({ event_id: ev.id, folder_id: fo.id, photo_id })) }, R, ph);
+  // não pode: pedidos, clientes, configurações, faturamento, equipe, excluir evento
+  for (const t of ['orders', 'customers', 'order_items', 'payment_events']) await assert.rejects(() => runQuery({ table: t, op: 'select' }, R, ph), /fotógrafo/);
+  await assert.rejects(() => runQuery({ table: 'settings', op: 'upsert', values: { id: 1, whatsapp: '1' } }, R, ph), /fotógrafo/);
+  await assert.rejects(() => runQuery({ table: 'events', op: 'delete', filters: [['id', 'eq', ev.id]] }, R, ph), /excluir eventos/);
+  for (const n of ['admin_stats', 'admin_customers', 'admin_team']) await assert.rejects(() => rpc(n, {}, R, ph), /fotógrafo/);
+  await assert.rejects(() => rpc('grant_admin', { p_email: 'z@x.com', p_password: '1234567890' }, R, ph), /fotógrafo|Dono/);
+  // busca pelo rosto: acha a foto 0 e recebe a pasta inteira (1 e 2 por pasta); a foto 3 é de outra pessoa
+  const r = await rpc('search_faces', { p_event: ev.id, p_embedding: vec(1), p_threshold: 0.5 }, 'public');
+  assert.deepEqual(r.map((x) => [x.photo_id, x.via || 'rosto']).sort(), [[ids[0], 'rosto'], [ids[1], 'pasta'], [ids[2], 'pasta']].sort());
+  // busca pelo número
+  const b = await rpc('search_bib', { p_event: ev.id, p_bib: '123' }, 'public');
+  assert.equal(b.length, 3);
+  assert.equal((await rpc('search_bib', { p_event: ev.id, p_bib: '999' }, 'public')).length, 0);
+  // público não lê as pastas (nomes ficam internos)
+  await assert.rejects(() => runQuery({ table: 'folders', op: 'select' }, 'public'), /Acesso negado/);
+  // apagar uma foto tira ela da pasta; apagar a pasta não apaga fotos
+  await runQuery({ table: 'photos', op: 'delete', filters: [['id', 'eq', ids[2]]] }, R, ph);
+  assert.equal((await runQuery({ table: 'folder_photos', op: 'select', filters: [['event_id', 'eq', ev.id]] }, R, ph)).data.length, 2);
+  await runQuery({ table: 'folders', op: 'delete', filters: [['id', 'eq', fo.id]] }, R, ph);
+  assert.equal((await runQuery({ table: 'folder_photos', op: 'select', filters: [['event_id', 'eq', ev.id]] }, R, ph)).data.length, 0);
+  assert.equal((await runQuery({ table: 'photos', op: 'select', filters: [['event_id', 'eq', ev.id]] }, R, ph)).data.length, 3);
+});

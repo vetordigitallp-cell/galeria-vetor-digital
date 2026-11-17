@@ -115,7 +115,7 @@ export async function viewEventForm(id) {
   });
 
   const out = [el('div', { class: 'page-head' }, el('div', {}, el('p', { class: 'eyebrow' }, id ? 'Editar evento' : 'Novo evento'), el('h1', {}, id ? ev.name : 'Criar evento'))), form];
-  if (id) out.push(dangerZone(ev));
+  if (id && window.__vdRole !== 'photographer') out.push(dangerZone(ev));
   return out;
 }
 
@@ -215,8 +215,10 @@ export async function viewEvent(id) {
 
   const uploader = uploadPanel(ev, s);
   const faces = facesPanel(ev, total, indexed, faceRows || 0);
-  const gallery = await photosPanel(ev);
-  return [head, uploader, gallery, faces];
+  const folders = await folderStore(ev);
+  const gallery = await photosPanel(ev, folders);
+  const foldersCard = foldersPanel(ev, folders);
+  return [head, uploader, gallery, foldersCard, faces];
 }
 
 // ---------------------------------------------------------------- envio em lote
@@ -450,7 +452,7 @@ export async function viewDelivery() {
 }
 
 // ---------------------------------------------------------------- organização das fotos
-async function photosPanel(ev) {
+async function photosPanel(ev, folders) {
   const grid = el('div', { class: 'agrid' });
   const info = el('span', { class: 'muted', style: { fontSize: '14px' } });
   const pager = el('div', { class: 'row', style: { justifyContent: 'center' } });
@@ -458,7 +460,18 @@ async function photosPanel(ev) {
   let filter = 'all';
   let page = 0;
   let rows = [];
+  let folderIds = null; // quando uma pasta está aberta: ids das fotos dela
   const selbar = el('div', { class: 'selbar', hidden: true });
+  const folderChip = el('div', { class: 'row', hidden: true });
+  folders.openFolder = async (f) => {
+    if (!f) { folderIds = null; folders.open = null; folderChip.hidden = true; page = 0; selected.clear(); return load(); }
+    folders.open = f; folderIds = await folders.photoIds(f.id); page = 0; selected.clear();
+    folderChip.hidden = false;
+    folderChip.replaceChildren(el('span', { class: 'tag on' }, `Pasta: ${f.name}${f.bib ? ' · nº ' + f.bib : ''}`),
+      el('button', { class: 'btn btn-sm', onclick: () => folders.openFolder(null) }, 'Ver todas as fotos'));
+    load();
+    grid.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const filters = [['all', 'Todas'], ['pub', 'Publicadas'], ['hidden', 'Ocultas'], ['noface', 'Sem rosto indexado']];
   const tabs = el('div', { class: 'tabs-row' }, filters.map(([k, t]) => {
@@ -472,6 +485,7 @@ async function photosPanel(ev) {
     if (filter === 'pub') q = q.eq('published', true);
     if (filter === 'hidden') q = q.eq('published', false);
     if (filter === 'noface') q = q.eq('faces_indexed', false);
+    if (folderIds) q = q.in('id', folderIds.length ? folderIds : ['-']);
     return q;
   }
 
@@ -484,6 +498,11 @@ async function photosPanel(ev) {
       act('Selecionar página', () => { rows.forEach((r) => selected.add(r.id)); draw(); }),
       act('Limpar', () => { selected.clear(); draw(); }),
       act('Baixar original', () => downloadMany(rows.filter((r) => selected.has(r.id)))),
+      folderPicker(),
+      folders.open ? act('Tirar da pasta', async () => {
+        await folders.removePhotos(folders.open.id, [...selected]);
+        selected.clear(); toast('Fotos retiradas da pasta'); folders.openFolder(folders.open);
+      }) : null,
       act('Publicar', () => bulk({ published: true })),
       act('Ocultar', () => bulk({ published: false })),
       act('Definir preço', async () => {
@@ -512,6 +531,28 @@ async function photosPanel(ev) {
           selected.clear(); toast('Fotos excluídas'); load();
         } catch (e) { toast('Erro: ' + e.message, 5000); }
       }, 'btn btn-sm btn-danger'));
+  }
+
+  // "Adicionar à pasta": escolhe uma pasta existente ou cria uma nova na hora.
+  function folderPicker() {
+    const sel = el('select', { class: 'input input-sm', 'aria-label': 'Adicionar à pasta' },
+      el('option', { value: '' }, 'Adicionar à pasta…'),
+      folders.list.map((f) => el('option', { value: f.id }, `${f.name}${f.bib ? ' · nº ' + f.bib : ''}`)),
+      el('option', { value: '__new' }, '＋ Nova pasta…'));
+    sel.addEventListener('change', async () => {
+      let id = sel.value; sel.value = '';
+      if (!id) return;
+      if (id === '__new') {
+        const f = await folders.askCreate();
+        if (!f) return;
+        id = f.id;
+      }
+      const n = await folders.addPhotos(id, [...selected]);
+      const f = folders.list.find((x) => String(x.id) === String(id));
+      toast(`${n} foto(s) adicionada(s) à pasta ${f ? f.name : ''}`);
+      selected.clear(); draw();
+    });
+    return sel;
   }
 
   async function bulk(patch) {
@@ -561,8 +602,103 @@ async function photosPanel(ev) {
   return el('div', { class: 'card stack' },
     el('div', { class: 'row', style: { justifyContent: 'space-between' } }, el('h3', {}, 'Fotografias do evento'), info),
     tabs,
-    el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, 'Clique nas fotos para selecionar e use a barra de ações para publicar, ocultar, definir preço, escolher a capa ou excluir.'),
-    grid, pager, selbar);
+    el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, 'Clique nas fotos para selecionar e use a barra de ações para colocar numa pasta, publicar, ocultar, definir preço, escolher a capa ou excluir.'),
+    folderChip, grid, pager, selbar);
+}
+
+// ---------------------------------------------------------------- pastas de pessoas
+// O fotógrafo junta numa pasta todas as fotos de um atleta (inclusive de costas, de longe,
+// de lado). Quando o cliente se encontra pelo rosto em qualquer foto da pasta, ou digita o
+// número de peito, recebe a pasta inteira.
+async function folderStore(ev) {
+  const st = { list: [], counts: {}, open: null, listeners: new Set() };
+  st.load = async () => {
+    const { data, error } = await sb.from('folders').select('*').eq('event_id', ev.id).order('name');
+    if (error) throw error;
+    st.list = data || [];
+    const { data: c } = await sb.rpc('folder_counts', { p_event: ev.id });
+    st.counts = c || {};
+    st.listeners.forEach((fn) => fn());
+  };
+  st.photoIds = async (folderId) => {
+    const { data, error } = await sb.from('folder_photos').select('photo_id').eq('event_id', ev.id).eq('folder_id', folderId).range(0, 9999);
+    if (error) throw error;
+    return data.map((r) => r.photo_id);
+  };
+  st.askCreate = async () => {
+    const name = prompt('Nome da pasta (ex.: nome do atleta):', '');
+    if (name == null || !name.trim()) return null;
+    const bib = prompt('Número de peito / camisa (opcional, deixe vazio se não souber):', '') || '';
+    const { data, error } = await sb.from('folders').insert({ event_id: ev.id, name: name.trim(), bib }).select().single();
+    if (error) { toast(error.message, 5000); return null; }
+    await st.load();
+    return data;
+  };
+  st.addPhotos = async (folderId, ids) => {
+    const have = new Set((await st.photoIds(folderId)).map(String));
+    const add = ids.filter((id) => !have.has(String(id)));
+    for (let i = 0; i < add.length; i += 100) {
+      const { error } = await sb.from('folder_photos').insert(add.slice(i, i + 100).map((photo_id) => ({ event_id: ev.id, folder_id: folderId, photo_id })));
+      if (error) { toast(error.message, 5000); break; }
+    }
+    await st.load();
+    return add.length;
+  };
+  st.removePhotos = async (folderId, ids) => {
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error } = await sb.from('folder_photos').delete().eq('event_id', ev.id).eq('folder_id', folderId).in('photo_id', ids.slice(i, i + 200));
+      if (error) { toast(error.message, 5000); break; }
+    }
+    await st.load();
+  };
+  await st.load();
+  return st;
+}
+
+function foldersPanel(ev, folders) {
+  const list = el('div', { class: 'stack', style: { gap: '8px' } });
+  const draw = () => {
+    if (!folders.list.length) {
+      list.replaceChildren(el('p', { class: 'muted', style: { margin: 0 } }, 'Nenhuma pasta ainda. Selecione as fotos de um atleta na galeria acima e escolha “Adicionar à pasta → Nova pasta”.'));
+      return;
+    }
+    list.replaceChildren(...folders.list.map((f) => {
+      const n = folders.counts[f.id] || 0;
+      const open = el('button', { class: 'btn btn-sm' }, 'Ver fotos');
+      open.addEventListener('click', () => folders.openFolder(f));
+      const edit = el('button', { class: 'btn btn-sm' }, 'Editar');
+      edit.addEventListener('click', async () => {
+        const name = prompt('Nome da pasta:', f.name);
+        if (name == null) return;
+        const bib = prompt('Número de peito / camisa (opcional):', f.bib || '');
+        if (bib == null) return;
+        const { error } = await sb.from('folders').update({ name: name.trim() || f.name, bib: bib.replace(/\D+/g, '') || null }).eq('id', f.id);
+        if (error) return toast(error.message, 5000);
+        await folders.load(); toast('Pasta atualizada');
+      });
+      const del = el('button', { class: 'btn btn-sm btn-danger' }, 'Excluir pasta');
+      del.addEventListener('click', async () => {
+        if (!confirm(`Excluir a pasta "${f.name}"? As fotos continuam no evento; só a pasta some.`)) return;
+        const { error } = await sb.from('folders').delete().eq('id', f.id);
+        if (error) return toast(error.message, 5000);
+        if (folders.open && String(folders.open.id) === String(f.id)) folders.openFolder(null);
+        await folders.load(); toast('Pasta excluída');
+      });
+      return el('div', { class: 'folder-row' },
+        el('div', {}, el('b', {}, f.name), el('span', { class: 'muted' }, ` · ${plural(n, 'foto', 'fotos')}${f.bib ? ' · nº de peito ' + f.bib : ''}`)),
+        el('div', { class: 'row' }, open, edit, del));
+    }));
+  };
+  folders.listeners.add(draw);
+  draw();
+  const add = el('button', { class: 'btn btn-sm' }, '＋ Nova pasta vazia');
+  add.addEventListener('click', () => folders.askCreate());
+  return el('div', { class: 'card stack' },
+    el('div', { class: 'row', style: { justifyContent: 'space-between' } }, el('h3', {}, 'Pastas de pessoas'), add),
+    el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } },
+      'Junte numa pasta todas as fotos de um atleta, inclusive as de costas ou de longe, que a busca pelo rosto não acha sozinha. ',
+      'Quando ele se encontrar pelo rosto em qualquer foto da pasta (ou digitar o número de peito), recebe a pasta inteira. A galeria geral continua igual.'),
+    list);
 }
 
 // ---------------------------------------------------------------- dados faciais (LGPD)
