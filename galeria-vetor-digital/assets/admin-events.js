@@ -1,5 +1,5 @@
 // Painel: eventos, envio em lote, organização das fotos e dados faciais.
-import { sb, el, ICONS, money, dateBR, plural, publicUrl, toast, loadSettings } from './core.js';
+import { sb, BACKEND, el, ICONS, money, dateBR, plural, publicUrl, toast, loadSettings } from './core.js';
 import { buildVariants, canvasFromBlob } from './watermark.js';
 import { photoFaces, vectorLiteral, loadFaceApi } from './face.js';
 import { saveSigned } from './vd-client.js';
@@ -129,7 +129,18 @@ function dangerZone(ev) {
     if (typed.trim() !== ev.name.trim()) { toast('Nome não confere. Nada foi excluído.'); return; }
     btn.disabled = true; btn.textContent = 'Excluindo arquivos…';
     try {
-      await deletePhotoFiles(ev.id);
+      await deletePhotoFiles(ev.id, null, (n) => { btn.textContent = `Excluindo arquivos… ${n}`; });
+      // Apaga as fotos do banco em lotes antes do evento, para não pesar numa única chamada.
+      btn.textContent = 'Preparando…';
+      if (BACKEND === 'netlify') await sb.rpc('warm_event', { p_event: ev.id });
+      for (let done = 0; ;) {
+        const { data, error: e1 } = await sb.from('photos').select('id').eq('event_id', ev.id).range(0, 199);
+        if (e1) throw e1;
+        if (!data.length) break;
+        const { error: e2 } = await sb.from('photos').delete().in('id', data.map((p) => p.id));
+        if (e2) throw e2;
+        done += data.length; btn.textContent = `Excluindo fotos… ${done}`;
+      }
       const { error } = await sb.from('events').delete().eq('id', ev.id);
       if (error) throw error;
       toast('Evento excluído');
@@ -147,20 +158,25 @@ async function removeObjects(paths) {
   const byBucket = { originals: [], previews: [] };
   paths.forEach(([b, p]) => p && byBucket[b].push(p));
   for (const [bucket, list] of Object.entries(byBucket)) {
-    for (let i = 0; i < list.length; i += 100) {
-      const { error } = await sb.storage.from(bucket).remove(list.slice(i, i + 100));
+    for (let i = 0; i < list.length; i += 60) {
+      const { error } = await sb.storage.from(bucket).remove(list.slice(i, i + 60));
       if (error) throw error;
     }
   }
 }
 
-async function deletePhotoFiles(eventId, ids) {
+async function deletePhotoFiles(eventId, ids, progress) {
+  let n = 0;
   for (let from = 0; ; from += 1000) {
     let q = sb.from('photos').select('id,original_path,preview_path,thumb_path').eq('event_id', eventId).range(from, from + 999);
     if (ids) q = q.in('id', ids);
     const { data, error } = await q;
     if (error) throw error;
-    await removeObjects(data.flatMap((p) => [['originals', p.original_path], ['previews', p.preview_path], ['previews', p.thumb_path]]));
+    for (let i = 0; i < data.length; i += 60) {
+      const part = data.slice(i, i + 60);
+      await removeObjects(part.flatMap((p) => [['originals', p.original_path], ['previews', p.preview_path], ['previews', p.thumb_path]]));
+      n += part.length; if (progress) progress(n);
+    }
     if (data.length < 1000) break;
   }
 }
@@ -286,9 +302,18 @@ function uploadPanel(ev, settings) {
           addLog(`${file.name}: ${e.message || e}`);
         }
         st.done++; draw();
+        if (st.ok && st.ok % 50 === 0) warm();
       }
     }
+    // Mantém a galeria e a busca por rosto prontas enquanto as fotos chegam (sem travar o envio).
+    let warming = false;
+    function warm() {
+      if (warming || BACKEND !== 'netlify') return;
+      warming = true;
+      sb.rpc('warm_event', { p_event: ev.id }).catch(() => {}).finally(() => { warming = false; });
+    }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    warm();
     uploading = false;
     stop.hidden = true;
     drop.style.pointerEvents = ''; drop.style.opacity = '';
@@ -479,8 +504,9 @@ async function photosPanel(ev) {
         try {
           const ids = [...selected];
           await deletePhotoFiles(ev.id, ids);
-          for (let i = 0; i < ids.length; i += 100) {
-            const { error } = await sb.from('photos').delete().in('id', ids.slice(i, i + 100));
+          if (BACKEND === 'netlify') await sb.rpc('warm_event', { p_event: ev.id });
+          for (let i = 0; i < ids.length; i += 200) {
+            const { error } = await sb.from('photos').delete().in('id', ids.slice(i, i + 200));
             if (error) throw error;
           }
           selected.clear(); toast('Fotos excluídas'); load();

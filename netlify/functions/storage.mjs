@@ -5,6 +5,7 @@
 import { handle, json, readJson, HttpError } from '../lib/http.mjs';
 import { adminFromRequest, fileToken } from '../lib/auth.mjs';
 import { BUCKETS, PART_MAX, cleanPath, putPart, removeFile } from '../lib/files.mjs';
+import { mapLimit } from '../lib/blobstore.mjs';
 
 export default handle(async (req) => {
   if (req.method !== 'POST') throw new HttpError(405, 'Método não permitido');
@@ -30,7 +31,7 @@ export default handle(async (req) => {
   if (!BUCKETS.has(b.bucket)) throw new HttpError(400, 'Bucket inválido.');
   if (action === 'remove') {
     const paths = (Array.isArray(b.paths) ? b.paths : []).slice(0, 200).map(cleanPath);
-    for (const p of paths) await removeFile(b.bucket, p);
+    await mapLimit(paths, 12, (p) => removeFile(b.bucket, p));
     return json(200, { data: paths.map((name) => ({ name })) });
   }
   if (action === 'sign') {

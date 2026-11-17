@@ -37,6 +37,6 @@ export async function getPart(bucket, path, part) {
 
 export async function removeFile(bucket, path) {
   const store = await kv('vd-files');
-  for (const k of await store.list(`f/${bucket}/${path}/`)) await store.del(k);
-  await store.del(`m/${bucket}/${path}`);
+  const keys = [...(await store.list(`f/${bucket}/${path}/`)), `m/${bucket}/${path}`];
+  await Promise.all(keys.map((k) => store.del(k)));
 }

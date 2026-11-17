@@ -46,10 +46,21 @@ async function readPart(store, t, part) {
   const [ver, snap] = await Promise.all([store.getJSON(`v/${t}/${part}`), store.getJSON(`s/${t}/${part}`)]);
   if (snap && ver != null && snap.t >= ver) return snap.rows;
   const start = Date.now() - 2000; // margem para relógios diferentes entre instâncias
-  const keys = await store.list(`r/${t}/${part}/`);
-  const rows = (await mapLimit(keys, 32, (k) => store.getJSON(k))).filter(Boolean);
-  if (ver != null) await store.setJSON(`s/${t}/${part}`, { t: start, rows });
-  return rows;
+  // Atualização incremental: reaproveita do retrato anterior as linhas cujo etag não mudou
+  // e busca só as novas ou alteradas. Com milhares de fotos sendo enviadas, isso evita reler
+  // a tabela inteira a cada foto nova.
+  const entries = await store.listMeta(`r/${t}/${part}/`);
+  const prev = new Map();
+  if (snap?.keys && snap.etags && snap.rows) snap.keys.forEach((k, i) => prev.set(k, [snap.etags[i], snap.rows[i]]));
+  const rows = await mapLimit(entries, 48, async ({ key, etag }) => {
+    const old = prev.get(key);
+    if (old && etag && old[0] === etag) return old[1];
+    return store.getJSON(key);
+  });
+  const keep = entries.map((e, i) => [e, rows[i]]).filter(([, r]) => r);
+  const out = keep.map(([, r]) => r);
+  if (ver != null) await store.setJSON(`s/${t}/${part}`, { t: start, keys: keep.map(([e]) => e.key), etags: keep.map(([e]) => e.etag), rows: out });
+  return out;
 }
 
 async function partitions(store, t) {
@@ -330,13 +341,12 @@ async function updateRows(store, t, rows, patch) {
 
 async function deleteRows(store, t, rows) {
   const touched = new Set();
-  for (const r of rows) {
+  await mapLimit(rows, 32, async (r) => {
     const part = partOf(t, r);
-    await store.del(rowKey(t, part, r.id));
-    await delUnique(store, t, r);
     touched.add(part);
-  }
-  for (const p of touched) await bump(store, t, p);
+    await Promise.all([store.del(rowKey(t, part, r.id)), delUnique(store, t, r)]);
+  });
+  await Promise.all([...touched].map((p) => bump(store, t, p)));
   // cascatas do banco anterior
   if (t === 'events') {
     for (const ev of rows) {
@@ -347,8 +357,14 @@ async function deleteRows(store, t, rows) {
     }
   }
   if (t === 'photos') {
+    // Uma leitura por evento (e não uma por foto) para achar os rostos das fotos apagadas.
+    const byEvent = new Map();
     for (const ph of rows) {
-      const f = (await loadRows(store, 'photo_faces', [['event_id', 'eq', ph.event_id]])).filter((x) => String(x.photo_id) === String(ph.id));
+      if (!byEvent.has(String(ph.event_id))) byEvent.set(String(ph.event_id), new Set());
+      byEvent.get(String(ph.event_id)).add(String(ph.id));
+    }
+    for (const [eventId, ids] of byEvent) {
+      const f = (await loadRows(store, 'photo_faces', [['event_id', 'eq', eventId]])).filter((x) => ids.has(String(x.photo_id)));
       if (f.length) await deleteRows(store, 'photo_faces', f);
     }
   }
@@ -379,6 +395,13 @@ export async function rpc(name, args = {}, role = 'server', actor = null) {
   }
   if (role === 'public') throw new HttpError(403, 'Acesso negado');
 
+  // Deixa prontos (em cache) os dados do evento: chamado pelo painel durante e depois do envio,
+  // para que a primeira busca por rosto ou abertura da galeria não precise montar tudo do zero.
+  if (name === 'warm_event') {
+    const photos = await loadRows(store, 'photos', [['event_id', 'eq', args.p_event]]);
+    const faces = await loadRows(store, 'photo_faces', [['event_id', 'eq', args.p_event]]);
+    return { photos: photos.length, faces: faces.length };
+  }
   if (name === 'purge_event_faces') {
     const faces = await loadRows(store, 'photo_faces', [['event_id', 'eq', args.p_event]]);
     await deleteRows(store, 'photo_faces', faces);
