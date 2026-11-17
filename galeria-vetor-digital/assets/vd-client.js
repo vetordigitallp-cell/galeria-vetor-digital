@@ -26,7 +26,13 @@ async function call(url, body, init = {}) {
     ...init
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && readSession()) writeSession(null);
+  // Só encerra a sessão quando a recusa vem das nossas funções (resposta com "error").
+  // Um 401 sem esse campo vem do próprio Netlify (projeto privado / proteção de acesso), não do login do painel.
+  if (res.status === 401 && data.error && readSession()) writeSession(null);
+  if (res.status === 401 && !data.error) {
+    const e = new Error('O Netlify bloqueou o acesso (projeto privado). Recarregue a página estando logado no Netlify, ou torne o site público.');
+    e.code = '401'; throw e;
+  }
   if (!res.ok) { const e = new Error(data.error || `Erro ${res.status}`); e.code = res.status === 409 && /duplicado/.test(data.error || '') ? '23505' : String(res.status); throw e; }
   return data;
 }
