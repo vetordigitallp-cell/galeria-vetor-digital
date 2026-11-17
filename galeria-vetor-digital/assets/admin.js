@@ -1,5 +1,5 @@
 // Painel administrativo da Galeria Vetor Digital (acesso restrito à equipe).
-import { sb, CONFIGURED, el, ICONS, LOGO, money, dateTimeBR, publicUrl, toast, setupScreen } from './core.js';
+import { sb, CONFIGURED, el, ICONS, LOGO, money, dateTimeBR, publicUrl, toast, setupScreen, backBar, trackNav } from './core.js';
 import { viewEvents, viewEventForm, viewEvent, isUploading, viewDelivery } from './admin-events.js';
 
 const app = document.getElementById('app');
@@ -349,6 +349,15 @@ async function viewTeam() {
 }
 
 // ---------------------------------------------------------------- roteador
+// Tela "pai" de cada área do painel, usada pelo botão Voltar quando não há tela anterior nesta aba.
+function adminBackFor(p0, p1, p2) {
+  if (!p0 || p0 === 'painel') return null; // visão geral não tem Voltar
+  if (p0 === 'eventos' && p1 && p2 === 'editar') return backBar(`#/eventos/${p1}`, 'Voltar');
+  if (p0 === 'eventos' && p1) return backBar('#/eventos', 'Voltar');
+  if (p0 === 'pedidos' && p1) return backBar('#/pedidos', 'Voltar');
+  return backBar('#/painel', 'Voltar');
+}
+
 async function route() {
   const my = ++rid;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -367,15 +376,18 @@ async function route() {
   else if (p0 === 'config') view = viewSettings();
   else if (p0 === 'equipe') view = viewTeam();
   else { active = 'painel'; view = viewDashboard(); }
+  trackNav();
+  const back = adminBackFor(p0, p1, p2);
+  const withBack = (nodes) => (back ? [back, ...[nodes].flat()] : nodes);
   app.replaceChildren(shell(active, [el('div', { class: 'row' }, el('span', { class: 'spinner' }), el('span', { class: 'muted' }, 'Carregando…'))]));
   try {
     const nodes = await view;
     if (my !== rid) return;
-    app.replaceChildren(shell(active, nodes));
+    app.replaceChildren(shell(active, withBack(nodes)));
   } catch (e) {
     console.error(e);
     if (my !== rid) return;
-    app.replaceChildren(shell(active, [el('div', { class: 'alert err' }, 'Erro: ' + (e.message || e))]));
+    app.replaceChildren(shell(active, withBack([el('div', { class: 'alert err' }, 'Erro: ' + (e.message || e))])));
   }
 }
 

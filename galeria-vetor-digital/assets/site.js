@@ -1,7 +1,7 @@
 // Site público da Galeria Vetor Digital (página única com rotas #/...).
 import {
   sb, CONFIGURED, el, ICONS, LOGO, money, dateBR, plural, publicUrl, toast, cart, myOrders,
-  photoItem, header, footer, loadSettings, mountWhatsApp, setWaContext, setupScreen, store, waLink, supportLink
+  photoItem, header, footer, loadSettings, mountWhatsApp, setWaContext, setupScreen, store, waLink, supportLink, backBar, trackNav
 } from './core.js';
 import { selfieDescriptor, vectorLiteral } from './face.js';
 import { apiOrder, renderOrder } from './order-ui.js';
@@ -337,10 +337,10 @@ async function viewFace(slug, rid) {
   if (!ev) return notFound('Evento não encontrado.');
   setWaContext(`Busca pelo rosto no evento ${ev.name}`);
   const flow = el('div', { class: 'face-flow' });
-  const back = el('a', { href: `#/e/${ev.slug}`, class: 'muted', style: { fontSize: '14px' } }, '← Voltar para todas as fotos do evento');
+  // O botão Voltar do topo da página leva de volta às fotos do evento.
 
   if (!ev.face_search) {
-    flow.append(back, el('div', { class: 'alert' }, 'A busca pelo rosto não está disponível para este evento.'));
+    flow.append(el('div', { class: 'alert' }, 'A busca pelo rosto não está disponível para este evento.'));
     return [eventHeader(ev, null, false), el('div', { class: 'container' }, flow)];
   }
 
@@ -364,7 +364,7 @@ async function viewFace(slug, rid) {
 
   const status = el('div', { class: 'card stack', hidden: true });
   const results = el('div', {});
-  flow.append(back, consent, status, results);
+  flow.append(consent, status, results);
 
   input.addEventListener('change', async () => {
     const file = input.files && input.files[0];
@@ -679,6 +679,17 @@ function notFound(msg) {
 }
 
 // ---------------------------------------------------------------- roteador
+let lastEventSlug = '';
+// Tela "pai" de cada página, usada pelo botão Voltar quando não há tela anterior nesta aba.
+function backFor(parts) {
+  if (!parts.length) return null; // página inicial não tem Voltar
+  const [p0, p1, p2] = parts;
+  if (p0 === 'e' && p1 && p2 === 'rosto') return backBar(`#/e/${encodeURIComponent(p1)}`, 'Voltar para as fotos do evento');
+  if (p0 === 'e' && p1) return backBar('#/eventos', 'Voltar');
+  if (p0 === 'carrinho') return backBar(lastEventSlug ? `#/e/${encodeURIComponent(lastEventSlug)}` : '#/eventos', 'Voltar');
+  return backBar('#/', 'Voltar');
+}
+
 async function route() {
   const rid = ++renderId;
   pageCtl.abort(); pageCtl = new AbortController();
@@ -697,13 +708,16 @@ async function route() {
     else if (parts[0] === 'compras') { active = 'compras'; view = viewPurchases(); }
     else if (parts[0] === 'privacidade') view = viewPrivacy();
     else view = notFound();
+    trackNav();
+    if (parts[0] === 'e' && parts[1]) lastEventSlug = parts[1];
     const nodes = await view;
     if (rid !== renderId) return;
-    await mount(active, nodes);
+    const back = backFor(parts);
+    await mount(active, back ? [el('div', { class: 'container' }, back), ...[nodes].flat()] : nodes);
   } catch (e) {
     console.error(e);
     if (rid !== renderId) return;
-    await mount(active, [el('div', { class: 'container', style: { padding: '64px 18px' } }, el('div', { class: 'alert err' }, 'Não foi possível carregar esta página. Verifique sua conexão e tente de novo.'))]);
+    await mount(active, [el('div', { class: 'container' }, backFor(parts) || backBar('#/', 'Voltar')), el('div', { class: 'container', style: { padding: '40px 18px' } }, el('div', { class: 'alert err' }, 'Não foi possível carregar esta página. Verifique sua conexão e tente de novo.'))]);
   }
 }
 

@@ -1,5 +1,5 @@
 // Página do pedido: /pedido/<id>/<token>  (retorno do checkout da InfinitePay)
-import { CONFIGURED, el, header, footer, mountWhatsApp, setWaContext, myOrders, setupScreen } from './core.js';
+import { CONFIGURED, el, header, footer, mountWhatsApp, setWaContext, myOrders, setupScreen, backBar } from './core.js';
 import { apiOrder, renderOrder } from './order-ui.js';
 
 const app = document.getElementById('app');
@@ -40,7 +40,7 @@ async function load() {
 
 async function start() {
   if (!CONFIGURED) { app.replaceChildren(setupScreen()); return; }
-  app.replaceChildren(header(), el('main', {}, box), await footer());
+  app.replaceChildren(header(), el('main', {}, el('div', { class: 'container' }, backBar('/#/compras', 'Voltar')), box), await footer());
   if (!id || !token) {
     box.replaceChildren(el('div', { class: 'alert err' }, 'Link do pedido incompleto. Abra pela área Minhas compras.'), el('a', { class: 'btn', href: '/#/compras' }, 'Minhas compras'));
     return;

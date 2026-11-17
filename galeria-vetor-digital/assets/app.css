@@ -299,3 +299,14 @@ textarea.input { min-height: 110px; resize: vertical; }
 .support-actions .btn svg, .summary .btn svg { width: 18px; height: 18px; }
 @media (min-width: 860px) { .support-card { grid-template-columns: 1fr auto; } }
 @media (max-width: 520px) { .support-actions .btn { flex: 1 1 100%; justify-content: center; } }
+
+/* Botão Voltar (site, pedido e painel) */
+.back-bar { padding-top: 18px; margin-bottom: -4px; }
+.back-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px 8px 10px; border: 1px solid var(--line-2); border-radius: 999px;
+  background: var(--surface); color: var(--fg); text-decoration: none;
+  font: 600 14px/1 var(--font-body); transition: border-color .15s, color .15s;
+}
+.back-btn:hover, .back-btn:focus-visible { border-color: var(--lime); color: var(--lime); }
+.adm .content > .back-bar { padding-top: 0; margin-bottom: 14px; }

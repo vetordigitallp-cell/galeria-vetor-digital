@@ -199,3 +199,23 @@ export function setupScreen() {
     el('h2', {}, 'Conecte o Supabase'),
     el('p', { class: 'muted' }, 'A galeria ainda não foi configurada para este endereço. O passo a passo está no arquivo SETUP.md do projeto.'));
 }
+
+// ---------------------------------------------------------------- botão Voltar
+// Guarda o caminho percorrido dentro do site/painel (só nesta aba, em memória).
+// "Voltar" retorna à tela anterior; se a pessoa chegou direto por um link, vai para a tela "pai".
+const navStack = [];
+export function trackNav() {
+  const h = location.hash || '#/';
+  if (navStack.length > 1 && navStack[navStack.length - 2] === h) navStack.pop();
+  else if (navStack[navStack.length - 1] !== h) navStack.push(h);
+}
+const BACK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+export function backBar(fallback, label = 'Voltar') {
+  const a = el('a', { class: 'back-btn', href: fallback, html: BACK_ICON }, el('span', {}, label));
+  a.addEventListener('click', (e) => {
+    const sameSiteReferrer = !location.hash && document.referrer.startsWith(location.origin);
+    if (navStack.length > 1 || sameSiteReferrer) { e.preventDefault(); history.back(); return; }
+    navStack.length = 0; // subiu para a tela "pai": o próximo Voltar continua subindo
+  });
+  return el('div', { class: 'back-bar' }, a);
+}
