@@ -39,33 +39,43 @@ function memoryStore(name) {
   return s;
 }
 
-const cache = new Map();
-
+// A conexão com o Netlify Blobs leva uma credencial TEMPORÁRIA da execução atual. Por isso ela NÃO pode ser guardada
+// entre visitas: depois de algumas horas a credencial expira e toda leitura falha ("Token expired").
+// Cada operação abre a conexão na hora (é barato, não faz pedido de rede) e, se mesmo assim a credencial
+// vier vencida, tenta mais uma vez com uma conexão nova.
 export async function kv(name) {
   if (process.env.VD_STORE === 'memory') return memoryStore(name);
-  if (cache.has(name)) return cache.get(name);
   const { getStore } = await import('@netlify/blobs');
-  const s = getStore({ name, consistency: 'strong' });
-  const api = {
-    async getJSON(key) { return (await s.get(key, { type: 'json' })) ?? null; },
-    async setJSON(key, value) { await s.setJSON(key, value); },
-    async getBytes(key) { const b = await s.get(key, { type: 'arrayBuffer' }); return b ? new Uint8Array(b) : null; },
-    async setBytes(key, buf) { await s.set(key, buf); },
-    async del(key) { await s.delete(key); },
+  const fresh = () => getStore({ name, consistency: 'strong' });
+  const run = async (fn) => {
+    try { return await fn(fresh()); }
+    catch (e) {
+      if (!/token expired|failed to decode token/i.test(String(e?.message || e))) throw e;
+      return await fn(fresh());
+    }
+  };
+  return {
+    async getJSON(key) { return run(async (s) => (await s.get(key, { type: 'json' })) ?? null); },
+    async setJSON(key, value) { await run((s) => s.setJSON(key, value)); },
+    async getBytes(key) { return run(async (s) => { const b = await s.get(key, { type: 'arrayBuffer' }); return b ? new Uint8Array(b) : null; }); },
+    async setBytes(key, buf) { await run((s) => s.set(key, buf)); },
+    async del(key) { await run((s) => s.delete(key)); },
     async list(prefix) {
-      const out = [];
-      for await (const page of s.list({ prefix, paginate: true })) for (const b of page.blobs) out.push(b.key);
-      return out.sort();
+      return run(async (s) => {
+        const out = [];
+        for await (const page of s.list({ prefix, paginate: true })) for (const b of page.blobs) out.push(b.key);
+        return out.sort();
+      });
     },
     // Lista com etag: permite atualizar o retrato de uma tabela buscando só o que mudou.
     async listMeta(prefix) {
-      const out = [];
-      for await (const page of s.list({ prefix, paginate: true })) for (const b of page.blobs) out.push({ key: b.key, etag: b.etag || '' });
-      return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      return run(async (s) => {
+        const out = [];
+        for await (const page of s.list({ prefix, paginate: true })) for (const b of page.blobs) out.push({ key: b.key, etag: b.etag || '' });
+        return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      });
     }
   };
-  cache.set(name, api);
-  return api;
 }
 
 export async function mapLimit(list, n, fn) {
